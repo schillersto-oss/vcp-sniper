@@ -1,0 +1,9 @@
+yfinance
+pandas
+mplfinance
+google-generativeai
+python-dotenv
+pillow
+lxml
+requests
+streamlit
