@@ -73,7 +73,7 @@ def analyze_chart(ticker, image_path):
         print("Skipping analysis: No GEMINI_API_KEY found.")
         return {"error": "No API Key"}
         
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     img = PIL.Image.open(image_path)
     
@@ -97,7 +97,7 @@ def generate_market_sentiment(context):
     if not GEMINI_API_KEY:
         return ["Error: No API Key"]
         
-    model = genai.GenerativeModel('gemini-2.0-flash')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     prompt = f"""
     You are a cynical, expert hedge fund trader (like from 'The Big Short').
