@@ -273,11 +273,12 @@ else:
             b_50 = df_breadth['Pct_Above_SMA50'].iloc[0]
             
         vix_val = 99
-        if 'vix' in sentiment_context:
-             try:
-                 vix_val = float(sentiment_context['vix'])
-             except:
-                 pass
+        try:
+             vix_data = yf.Ticker("^VIX").history(period="1d")
+             if not vix_data.empty:
+                 vix_val = float(vix_data['Close'].iloc[-1])
+        except:
+             pass
         
         if b_50 > 50 and vix_val < 25:
             light_color = "green"
