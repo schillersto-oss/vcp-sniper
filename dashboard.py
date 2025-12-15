@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import yfinance as yf
 from screener import fetch_data, calculate_technicals, run_screener
-from vision_analyst import generate_chart, analyze_chart, generate_market_sentiment
+from vision_analyst import generate_chart, analyze_chart
 from sector_monitor import get_sector_performance
 
 # Set page config
@@ -255,67 +255,117 @@ else:
     col2.metric("Long Setups 🚀", len(longs))
     col3.metric("Short Setups 📉", len(shorts))
 
-    # Market Sentiment (AI)
-    st.markdown("### 🧠 Market Sentiment (AI)")
+    # --- NEW: Sniper's Cockpit (Trade Light, Focus, Catalysts) ---
+    st.markdown("### 🎛️ Sniper's Cockpit")
     
-    # Gather Context
-    sentiment_context = {}
-    
-    # 1. VIX
-    try:
-        vix_data = yf.Ticker("^VIX").history(period="1d")
-        if not vix_data.empty:
-            sentiment_context['vix'] = f"{vix_data['Close'].iloc[-1]:.2f}"
-    except:
-        pass
-        
-    # 2. Breadth
-    if df_breadth is not None and not df_breadth.empty:
-        sentiment_context['breadth_50'] = f"{df_breadth['Pct_Above_SMA50'].iloc[0]:.1f}"
-        sentiment_context['breadth_200'] = f"{df_breadth['Pct_Above_SMA200'].iloc[0]:.1f}"
-        
-    # 3. Momentum Leaders
-    try:
-        mom_tickers_sent = ['PLTR', 'NVDA', 'TSLA', 'APP']
-        mom_data_sent = yf.download(mom_tickers_sent, period="2d", progress=False)
-        if not mom_data_sent.empty:
-             # Calculate simple avg change of these leaders
-             closes_s = mom_data_sent['Close']
-             if len(closes_s) >= 2:
-                 changes = []
-                 for t in mom_tickers_sent:
-                     if t in closes_s.columns:
-                         c = closes_s[t].dropna()
-                         if len(c) >= 2:
-                             chg = ((c.iloc[-1] - c.iloc[-2]) / c.iloc[-2]) * 100
-                             changes.append(chg)
-                 if changes:
-                     avg_mom = sum(changes) / len(changes)
-                     sentiment_context['mom_change'] = f"{avg_mom:+.2f}"
-    except:
-        pass
+    col_cockpit1, col_cockpit2, col_cockpit3 = st.columns(3)
 
-    # Generate Sentiment (Cached if possible, but for now direct call)
-    if "sentiment_lines" not in st.session_state:
-        with st.spinner("AI analyzing market sentiment..."):
-            st.session_state.sentiment_lines = generate_market_sentiment(sentiment_context)
-            st.session_state.sentiment_time = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+    # 1. Trade Light (Market Internals)
+    with col_cockpit1:
+        st.markdown("#### 🚦 Trade Light")
+        light_color = "red"
+        status_msg = "Defensive (Cash is King)"
+        
+        # Logic: Green if Breadth > 50 AND VIX < 20 (if VIX exists)
+        # Simplify: Green > 50% Breadth, Yellow > 30%, Red < 30%
+        b_50 = 0
+        if df_breadth is not None and not df_breadth.empty:
+            b_50 = df_breadth['Pct_Above_SMA50'].iloc[0]
             
-    # Display
-    if "sentiment_time" in st.session_state:
-        st.caption(f"Updated: {st.session_state.sentiment_time}")
+        vix_val = 99
+        if 'vix' in sentiment_context:
+             try:
+                 vix_val = float(sentiment_context['vix'])
+             except:
+                 pass
         
-    if st.session_state.sentiment_lines:
-         for line in st.session_state.sentiment_lines:
-             st.markdown(f"**> {line}**")
-             
-    if st.button("Refresh Sentiment"):
-        if "sentiment_lines" in st.session_state:
-            del st.session_state.sentiment_lines
-        if "sentiment_time" in st.session_state:
-            del st.session_state.sentiment_time
-        st.rerun()
-        
+        if b_50 > 50 and vix_val < 25:
+            light_color = "green"
+            status_msg = "Aggressive (Green Light) 🟢"
+        elif b_50 < 30 or vix_val > 30:
+            light_color = "red"
+            status_msg = "Defensive (Red Light) 🔴"
+        else:
+            light_color = "orange"
+            status_msg = "Caution (Yellow Light) 🟡"
+            
+        st.info(f"**Status:** {status_msg}")
+        if df_breadth is not None:
+             st.caption(f"Stocks > SMA50: {b_50:.1f}% | VIX: {vix_val:.2f}")
+
+    # 2. Daily Focus (Top 3)
+    with col_cockpit2:
+        st.markdown("#### 🎯 Daily Focus")
+        if not longs.empty:
+            # Rank by a composite score: RS_3M + RVOL (simple proxy)
+            # Or just use the sorted 'longs' from filtered results
+            top_3 = longs.sort_values(by=selected_metric, ascending=False).head(3)
+            
+            for i, (idx, row) in enumerate(top_3.iterrows()):
+                t = row['Ticker']
+                p = row['Price']
+                rs = row[selected_metric]
+                # Create a mini link
+                link = f"https://finance.yahoo.com/quote/{t}"
+                st.markdown(f"**{i+1}. [{t}]({link})** (${p:.2f})")
+                st.caption(f"RS: {rs:.1f}% | RVOL: {row['RVOL']:.1f}x")
+        else:
+            st.write("No candidates for focus list.")
+
+    # 3. Catalyst Watch (Earnings)
+    with col_cockpit3:
+        st.markdown("#### 📅 Catalyst Watch")
+        # Check top 5 candidates for earnings
+        if not longs.empty:
+            top_candidates = longs.head(5) # Limit to top 5 to be fast
+            found_catalyst = False
+            
+            # We need to fetch this live as it's not in CSV deeply
+            # Use specific container to avoid re-running widely
+            catalyst_container = st.empty()
+            
+            if st.button("Scan Top 5 for Earnings"):
+                events = []
+                with st.spinner("Scanning calendars..."):
+                    for _, row in top_candidates.iterrows():
+                        t = row['Ticker']
+                        try:
+                            tk = yf.Ticker(t)
+                            cal = tk.calendar
+                            # Different yfinance versions return different formats (dict or df)
+                            # Try to handle generic
+                            if cal is not None:
+                                # If dataframe
+                                if isinstance(cal, pd.DataFrame) and not cal.empty:
+                                   # Usually contains 'Earnings Date' or 0
+                                   if 0 in cal.columns: # Often date is in first column
+                                       next_date = cal.iloc[0][0]
+                                   elif 'Earnings Date' in cal.columns:
+                                       next_date = cal['Earnings Date'].iloc[0]
+                                   else:
+                                       next_date = None
+                                       
+                                   if next_date:
+                                       # Check if within 7 days
+                                       nd = pd.to_datetime(next_date).tz_localize(None)
+                                       today = pd.Timestamp.now().normalize()
+                                       days_diff = (nd - today).days
+                                       
+                                       if 0 <= days_diff <= 14:
+                                           events.append(f"**{t}**: {nd.strftime('%b %d')} ({days_diff} days)")
+                        except Exception:
+                            pass
+                
+                if events:
+                    for e in events:
+                        st.write(e)
+                else:
+                    st.write("No earnings in next 14 days for top 5.")
+            else:
+                st.write("(Click to scan top 5)")
+        else:
+            st.write("No candidates.")
+
     st.divider()
 
     # Institutional Radar (Whale Tracker)
