@@ -2,9 +2,9 @@ import streamlit as st
 import pandas as pd
 import os
 import yfinance as yf
-from screener import fetch_data, calculate_technicals
-from screener import fetch_data, calculate_technicals
+from screener import fetch_data, calculate_technicals, run_screener
 from vision_analyst import generate_chart, analyze_chart, generate_market_sentiment
+from sector_monitor import get_sector_performance
 
 # Set page config
 st.set_page_config(page_title="VCP Sniper Dashboard", layout="wide")
@@ -13,139 +13,189 @@ st.set_page_config(page_title="VCP Sniper Dashboard", layout="wide")
 st.title("🎯 VCP Sniper Dashboard")
 st.markdown("Automated screening for Minervini/Qullamaggie setups.")
 
-# Load Data
-DATA_FILE = "candidates.csv"
+# Constants
 DATA_FILE = "candidates.csv"
 SECTOR_FILE = "sector_performance.csv"
 BREADTH_FILE = "market_breadth.csv"
 
+def make_clickable(df):
+    if df is None or df.empty:
+        return df
+    df_display = df.copy()
+    if 'Ticker' in df_display.columns:
+        df_display['Ticker'] = df_display['Ticker'].apply(
+            lambda x: f"https://finance.yahoo.com/quote/{x}"
+        )
+    return df_display
+
+def color_variant(val):
+    """
+    Takes a scalar and returns a string with
+    the css property `'color: red'` for negative
+    strings, green for positive.
+    """
+    try:
+        val = float(val)
+        color = 'green' if val >= 0 else 'red'
+    except:
+        color = 'black'
+    return f'color: {color}'
+
 @st.cache_data
 def load_data():
-    candidates = None
-    sectors = None
-    
     if os.path.exists(DATA_FILE):
-        candidates = pd.read_csv(DATA_FILE)
-        
+        return pd.read_csv(DATA_FILE)
+    return None
+
+@st.cache_data
+def load_sector_data():
     if os.path.exists(SECTOR_FILE):
-        sectors = pd.read_csv(SECTOR_FILE)
-        
-    breadth = None
+        return pd.read_csv(SECTOR_FILE)
+    return None
+
+@st.cache_data
+def load_breadth_data():
     if os.path.exists(BREADTH_FILE):
-        breadth = pd.read_csv(BREADTH_FILE)
-        
-    return candidates, sectors, breadth
+        return pd.read_csv(BREADTH_FILE)
+    return None
 
-df, df_sectors, df_breadth = load_data()
-
-if df is None:
-    st.error(f"Data file `{DATA_FILE}` not found. Please run `screener.py` first.")
-else:
-    # Sidebar Filters
-    st.sidebar.header("Filters")
-    
-    # Macro Indicators
-    st.sidebar.markdown("### 🌍 Macro Context")
-    try:
-        macro_tickers = {'VIX': '^VIX', '10Y Yield': '^TNX', 'Bitcoin': 'BTC-USD'}
-        cols = st.sidebar.columns(3)
-        for i, (label, ticker) in enumerate(macro_tickers.items()):
-            m_data = yf.Ticker(ticker).history(period='2d')
-            if len(m_data) >= 1:
-                current = m_data['Close'].iloc[-1]
-                prev = m_data['Close'].iloc[-2] if len(m_data) > 1 else current
-                delta = current - prev
-                cols[i].metric(label, f"{current:.2f}", f"{delta:.2f}")
-    except Exception as e:
-        st.sidebar.error(f"Macro data error: {e}")
-    st.sidebar.divider()
-    
-    # Key Events
-    st.sidebar.markdown("### 📅 Key Events")
-    
-    # Momentum Leaders Earnings
-    with st.sidebar.expander("Momentum Leaders 🚀", expanded=True):
-        mom_tickers = ['PLTR', 'APP', 'RDDT', 'MSTR', 'COIN', 'NVDA', 'TSLA']
-        
-        # Fetch data for all at once for speed
+# Sidebar - Cloud Controls
+st.sidebar.header("☁️ Cloud Controls")
+if st.sidebar.button("Run Cloud Screener (Slow)"):
+    with st.spinner("Running Screener on 500+ stocks... This takes 2-3 minutes."):
         try:
-            # Fetch 5d to ensure we have at least 2 days of data
-            mom_data = yf.download(mom_tickers, period="5d", progress=False)
+            # Run Screener
+            new_df = run_screener()
+            if not new_df.empty:
+                new_df.to_csv(DATA_FILE, index=False)
             
-            # Handle MultiIndex if necessary
-            if isinstance(mom_data.columns, pd.MultiIndex):
-                closes = mom_data['Close']
-                vols = mom_data['Volume']
-            else:
-                # Fallback if structure is different
-                closes = mom_data['Close']
-                vols = mom_data['Volume']
-            
-            # Ensure we have enough data
-            if len(closes) >= 2:
-                for t in mom_tickers:
-                    try:
-                        # Get latest close and prev close
-                        if t in closes.columns:
-                            # Drop NaNs for this specific ticker to find last valid prices
-                            t_close = closes[t].dropna()
-                            t_vol = vols[t].dropna()
-                            
-                            if len(t_close) >= 2:
-                                current = t_close.iloc[-1]
-                                prev = t_close.iloc[-2]
-                                pct_chg = ((current - prev) / prev) * 100
-                                
-                                vol = t_vol.iloc[-1]
-                                # Format volume (M or K)
-                                if vol > 1_000_000:
-                                    vol_str = f"{vol/1_000_000:.1f}M"
-                                else:
-                                    vol_str = f"{vol/1_000:.0f}K"
-                                    
-                                # Color code
-                                color = "green" if pct_chg >= 0 else "red"
-                                st.markdown(f"**{t}**: :{color}[{pct_chg:+.2f}%] (Vol: {vol_str})")
-                            else:
-                                st.write(f"**{t}**: Insufficient Data")
-                        else:
-                            st.write(f"**{t}**: N/A")
-                    except Exception as e:
-                        st.write(f"**{t}**: -")
-            else:
-                st.error("Not enough market data returned.")
+            # Run Sector Monitor
+            new_sector = get_sector_performance()
+            if not new_sector.empty:
+                new_sector.to_csv(SECTOR_FILE, index=False)
+                
+            st.success("Screener Complete! Reloading...")
+            st.cache_data.clear()
+            st.rerun()
         except Exception as e:
-            st.error(f"Failed to load momentum data: {e}")
+            st.error(f"Screener Failed: {e}")
 
-    with st.sidebar.expander("Economic Events (Est.)", expanded=False):
-        st.write("• **FOMC Meeting**: Dec 17-18")
-        st.write("• **CPI Release**: Dec 10")
-        st.write("• **NFP Report**: Dec 05")
-    st.sidebar.divider()
+st.sidebar.divider()
+
+# Load Data
+df = load_data()
+df_sector = load_sector_data()
+df_breadth = load_breadth_data()
+
+# Sidebar Filters
+st.sidebar.header("🔍 Filters")
+
+# Macro Indicators
+st.sidebar.markdown("### 🌍 Macro Context")
+try:
+    macro_tickers = {'VIX': '^VIX', '10Y Yield': '^TNX', 'Bitcoin': 'BTC-USD'}
+    cols = st.sidebar.columns(3)
+    for i, (label, ticker) in enumerate(macro_tickers.items()):
+        m_data = yf.Ticker(ticker).history(period='2d')
+        if len(m_data) >= 1:
+            current = m_data['Close'].iloc[-1]
+            prev = m_data['Close'].iloc[-2] if len(m_data) > 1 else current
+            delta = current - prev
+            cols[i].metric(label, f"{current:.2f}", f"{delta:.2f}")
+except Exception as e:
+    st.sidebar.error(f"Macro data error: {e}")
+st.sidebar.divider()
+
+# Key Events
+st.sidebar.markdown("### 📅 Key Events")
+
+# Momentum Leaders Earnings
+with st.sidebar.expander("Momentum Leaders 🚀", expanded=True):
+    mom_tickers = ['PLTR', 'APP', 'RDDT', 'MSTR', 'COIN', 'NVDA', 'TSLA']
     
-    # Market Health (Sidebar)
-    if df_breadth is not None and not df_breadth.empty:
-        st.sidebar.markdown("### 🏥 Market Health")
-        b_50 = df_breadth['Pct_Above_SMA50'].iloc[0]
-        b_200 = df_breadth['Pct_Above_SMA200'].iloc[0]
+    # Fetch data for all at once for speed
+    try:
+        # Fetch 5d to ensure we have at least 2 days of data
+        mom_data = yf.download(mom_tickers, period="5d", progress=False)
         
-        col_b1, col_b2 = st.sidebar.columns(2)
-        col_b1.metric("> SMA50", f"{b_50:.1f}%")
-        col_b2.metric("> SMA200", f"{b_200:.1f}%")
-        
-        if b_50 > 50 and b_200 > 50:
-            st.sidebar.success("Market is Healthy 🟢")
-        elif b_50 < 30:
-            st.sidebar.error("Market is Weak 🔴")
+        # Handle MultiIndex if necessary
+        if isinstance(mom_data.columns, pd.MultiIndex):
+            closes = mom_data['Close']
+            vols = mom_data['Volume']
         else:
-            st.sidebar.warning("Market is Mixed 🟡")
-        st.sidebar.divider()
-    
-    # Refresh Button
-    if st.sidebar.button("Refresh Data"):
-        st.cache_data.clear()
-        st.rerun()
+            # Fallback if structure is different
+            closes = mom_data['Close']
+            vols = mom_data['Volume']
         
+        # Ensure we have enough data
+        if len(closes) >= 2:
+            for t in mom_tickers:
+                try:
+                    # Get latest close and prev close
+                    if t in closes.columns:
+                        # Drop NaNs for this specific ticker to find last valid prices
+                        t_close = closes[t].dropna()
+                        t_vol = vols[t].dropna()
+                        
+                        if len(t_close) >= 2:
+                            current = t_close.iloc[-1]
+                            prev = t_close.iloc[-2]
+                            pct_chg = ((current - prev) / prev) * 100
+                            
+                            vol = t_vol.iloc[-1]
+                            # Format volume (M or K)
+                            if vol > 1_000_000:
+                                vol_str = f"{vol/1_000_000:.1f}M"
+                            else:
+                                vol_str = f"{vol/1_000:.0f}K"
+                                
+                            # Color code
+                            color = "green" if pct_chg >= 0 else "red"
+                            st.markdown(f"**{t}**: :{color}[{pct_chg:+.2f}%] (Vol: {vol_str})")
+                        else:
+                            st.write(f"**{t}**: Insufficient Data")
+                    else:
+                        st.write(f"**{t}**: N/A")
+                except Exception as e:
+                    st.write(f"**{t}**: -")
+        else:
+            st.error("Not enough market data returned.")
+    except Exception as e:
+        st.error(f"Failed to load momentum data: {e}")
+
+with st.sidebar.expander("Economic Events (Est.)", expanded=False):
+    st.write("• **FOMC Meeting**: Dec 17-18")
+    st.write("• **CPI Release**: Dec 10")
+    st.write("• **NFP Report**: Dec 05")
+st.sidebar.divider()
+
+# Market Health (Sidebar)
+if df_breadth is not None and not df_breadth.empty:
+    st.sidebar.markdown("### 🏥 Market Health")
+    b_50 = df_breadth['Pct_Above_SMA50'].iloc[0]
+    b_200 = df_breadth['Pct_Above_SMA200'].iloc[0]
+    
+    col_b1, col_b2 = st.sidebar.columns(2)
+    col_b1.metric("> SMA50", f"{b_50:.1f}%")
+    col_b2.metric("> SMA200", f"{b_200:.1f}%")
+    
+    if b_50 > 50 and b_200 > 50:
+        st.sidebar.success("Market is Healthy 🟢")
+    elif b_50 < 30:
+        st.sidebar.error("Market is Weak 🔴")
+    else:
+        st.sidebar.warning("Market is Mixed 🟡")
+    st.sidebar.divider()
+
+# Refresh Button
+if st.sidebar.button("Refresh Data"):
+    st.cache_data.clear()
+    st.rerun()
+
+# Check if data loaded
+if df is None:
+    st.info("👋 Welcome! Please click **'Run Cloud Screener'** in the sidebar to generate data.")
+else:
     # Price Filter
     min_price_data, max_price_data = int(df['Price'].min()), int(df['Price'].max())
     
@@ -225,7 +275,6 @@ else:
         sentiment_context['breadth_200'] = f"{df_breadth['Pct_Above_SMA200'].iloc[0]:.1f}"
         
     # 3. Momentum Leaders
-    # (Re-using the logic from sidebar if possible, or just re-fetch quickly)
     try:
         mom_tickers_sent = ['PLTR', 'NVDA', 'TSLA', 'APP']
         mom_data_sent = yf.download(mom_tickers_sent, period="2d", progress=False)
@@ -277,12 +326,17 @@ else:
     if not whales.empty:
         st.success(f"Detected {len(whales)} stocks with >2x Volume (Institutional Footprints)")
         st.dataframe(
-            whales[['Ticker', 'Price', 'RVOL', 'Side', 'Sector']].style.format({
-                "Price": "${:.2f}",
-                "RVOL": "{:.2f}x"
-            }),
+            make_clickable(whales[['Ticker', 'Price', 'RVOL', 'Side', 'Sector']]),
+            column_config={
+                "Ticker": st.column_config.LinkColumn(
+                    "Ticker", display_text="https://finance\\.yahoo\\.com/quote/(.*)"
+                ),
+                "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                "RVOL": st.column_config.NumberColumn("RVOL", format="%.2fx"),
+            },
             use_container_width=True,
-            height=200
+            height=200,
+            hide_index=True
         )
     else:
         st.info("No unusual institutional volume detected (>2x RVOL) in current candidates.")
@@ -293,176 +347,162 @@ else:
     tab1, tab2, tab3, tab4 = st.tabs(["🚀 Long Candidates", "📉 Short Candidates", "📊 Sector Monitor", "📈 Chart Viewer"])
 
     with tab1:
-        st.subheader("Strongest Momentum (Stage 2 Uptrend)")
+        st.subheader("Long Setups (Trend Template + Momentum)")
         if not longs.empty:
-            longs_sorted = longs.sort_values(by=selected_metric, ascending=False)
+            # Sort by selected metric
+            longs = longs.sort_values(by=selected_metric, ascending=False)
+            
             st.dataframe(
-                longs_sorted.style.format({
-                    "Price": "${:.2f}",
-                    "RVOL": "{:.2f}x",
-                    "RSI": "{:.1f}",
-                    "RS_1D": "{:+.1f}%",
-                    "RS_1W": "{:+.1f}%",
-                    "RS_1M": "{:+.1f}%",
-                    "RS_3M": "{:+.1f}%",
-                    "RS_1Y": "{:+.1f}%",
-                    "52W_High": "${:.2f}"
-                }),
+                make_clickable(longs[['Ticker', 'Price', 'RVOL', 'RSI', selected_metric, 'Sector', 'Earnings']]),
+                column_config={
+                    "Ticker": st.column_config.LinkColumn(
+                        "Ticker", display_text="https://finance\\.yahoo\\.com/quote/(.*)"
+                    ),
+                    "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "RVOL": st.column_config.NumberColumn("RVOL", format="%.2f"),
+                    "RSI": st.column_config.NumberColumn("RSI", format="%.1f"),
+                    selected_metric: st.column_config.NumberColumn(selected_metric, format="%.2f%%"),
+                },
                 use_container_width=True,
-                height=600
+                hide_index=True
             )
         else:
-            st.info("No Long candidates found matching filters.")
+            st.info("No Long candidates found.")
 
     with tab2:
-        st.subheader("Weakest Momentum (Stage 4 Downtrend)")
+        st.subheader("Short Setups (Downtrend + Weakness)")
         if not shorts.empty:
-            shorts_sorted = shorts.sort_values(by=selected_metric, ascending=True)
+            shorts = shorts.sort_values(by=selected_metric, ascending=True) # Sort by weakest
             st.dataframe(
-                shorts_sorted.style.format({
-                    "Price": "${:.2f}",
-                    "RVOL": "{:.2f}x",
-                    "RSI": "{:.1f}",
-                    "RS_1D": "{:+.1f}%",
-                    "RS_1W": "{:+.1f}%",
-                    "RS_1M": "{:+.1f}%",
-                    "RS_3M": "{:+.1f}%",
-                    "RS_1Y": "{:+.1f}%",
-                    "52W_High": "${:.2f}"
-                }),
+                make_clickable(shorts[['Ticker', 'Price', 'RVOL', 'RSI', selected_metric, 'Sector', 'Earnings']]),
+                column_config={
+                    "Ticker": st.column_config.LinkColumn(
+                        "Ticker", display_text="https://finance\\.yahoo\\.com/quote/(.*)"
+                    ),
+                    "Price": st.column_config.NumberColumn("Price", format="$%.2f"),
+                    "RVOL": st.column_config.NumberColumn("RVOL", format="%.2f"),
+                    "RSI": st.column_config.NumberColumn("RSI", format="%.1f"),
+                    selected_metric: st.column_config.NumberColumn(selected_metric, format="%.2f%%"),
+                },
                 use_container_width=True,
-                height=600
+                hide_index=True
             )
         else:
-            st.info("No Short candidates found matching filters.")
-            
+            st.info("No Short candidates found.")
+
     with tab3:
         st.subheader("Sector Performance")
-        if df_sectors is not None:
-            # Heatmap style coloring
+        if df_sector is not None:
+            # Sort by selected metric
+            metric_col = f"{time_frame_map[time_frame].replace('RS_', '')} %"
+            # Handle mapping mismatch (RS_1D -> 1D %)
+            metric_col = metric_col.replace("1D %", "1D %").replace("1W %", "1W %").replace("1M %", "1M %").replace("3M %", "3M %").replace("1Y %", "1Y %")
+            
+            if metric_col in df_sector.columns:
+                df_sector = df_sector.sort_values(by=metric_col, ascending=False)
+                
+            # Apply styling
             st.dataframe(
-                df_sectors.style.format({
-                    "1D %": "{:+.2f}%",
-                    "1W %": "{:+.2f}%",
-                    "1M %": "{:+.2f}%",
-                    "3M %": "{:+.2f}%",
-                    "1Y %": "{:+.2f}%"
-                }).background_gradient(cmap='RdYlGn', subset=['1D %', '1W %', '1M %', '3M %', '1Y %']),
+                df_sector.style.format({
+                    "1D %": "{:.2f}%",
+                    "1W %": "{:.2f}%",
+                    "1M %": "{:.2f}%",
+                    "3M %": "{:.2f}%",
+                    "1Y %": "{:.2f}%"
+                }).background_gradient(cmap='RdYlGn', subset=["1D %", "1W %", "1M %", "3M %", "1Y %"]),
                 use_container_width=True,
-                height=600
+                hide_index=True
             )
         else:
-            st.warning("Sector performance data not found. Run `sector_monitor.py`.")
+            st.warning("Sector data not available.")
 
     with tab4:
-        st.subheader("VCP Chart Analysis")
+        st.subheader("AI Chart Analysis")
+        ticker_input = st.text_input("Enter Ticker for VCP Analysis:", value="PLTR").upper()
         
-        # On-Demand Analysis
-        st.markdown("### Analyze Any Ticker")
-        col_input, col_btn = st.columns([3, 1])
-        with col_input:
-            ticker_input = st.text_input("Enter Ticker Symbol (e.g., NVDA)", "").upper()
-        with col_btn:
-            analyze_btn = st.button("Generate Analysis")
-            
-        if analyze_btn and ticker_input:
-            with st.spinner(f"Fetching data and analyzing {ticker_input}..."):
-                # 1. Fetch Data
-                df_ticker = fetch_data(ticker_input)
-                if df_ticker is not None and not df_ticker.empty:
-                    df_ticker = calculate_technicals(df_ticker)
-                    
-                    # Fetch Earnings Date
-                    try:
-                        ticker_obj = yf.Ticker(ticker_input)
-                        cal = ticker_obj.calendar
-                        if cal is not None and not cal.empty:
-                            next_earnings = cal.iloc[0][0]
-                            # Format if it's a date object
-                            st.info(f"📅 Next Earnings Date: {next_earnings}")
-                        else:
-                            st.info("📅 Earnings Date: Not found")
-                    except Exception as e:
-                        print(f"Earnings fetch error: {e}")
-                    
-                    # 2. Generate Chart
-                    chart_path = generate_chart(ticker_input, df_ticker)
-                    st.image(chart_path, caption=f"{ticker_input} Daily Chart", use_container_width=True)
-                    
-                    # 3. Analyze with Gemini
-                    analysis = analyze_chart(ticker_input, chart_path)
-                    
-                    if analysis:
-                        if "error" in analysis:
-                            st.warning(f"Analysis skipped: {analysis['error']}")
-                        else:
-                            st.success(f"Gemini Verdict: {analysis.get('score')}/100 - {analysis.get('verdict')}")
-                            st.json(analysis)
-                    else:
-                        st.error("Failed to generate analysis.")
+        if st.button("Analyze Chart"):
+            if ticker_input:
+                with st.spinner(f"Fetching data and analyzing {ticker_input}..."):
+                    # 1. Fetch Data
+                    data = fetch_data(ticker_input)
+                    if data is not None:
+                        data = calculate_technicals(data)
                         
-                else:
-                    st.error(f"Could not fetch data for {ticker_input}")
+                        # 2. Earnings Check
+                        try:
+                            t_obj = yf.Ticker(ticker_input)
+                            cal = t_obj.calendar
+                            if cal is not None and not cal.empty:
+                                next_earn = cal.iloc[0][0]
+                                earn_str = pd.to_datetime(next_earn).strftime('%Y-%m-%d')
+                                st.info(f"📅 Next Earnings: {earn_str}")
+                        except:
+                            pass
 
-        st.divider()
-        st.markdown("### Saved Charts")
-        
-        # Get list of generated charts
-        CHARTS_DIR = "charts"
-        if os.path.exists(CHARTS_DIR):
-            chart_files = [f for f in os.listdir(CHARTS_DIR) if f.endswith(".png")]
-            
-            if chart_files:
-                # Selector
-                selected_chart = st.selectbox("Select Saved Chart", chart_files)
-                
-                if selected_chart:
-                    st.image(os.path.join(CHARTS_DIR, selected_chart), caption=selected_chart, use_container_width=True)
-            else:
-                st.info("No saved charts found.")
-        else:
-            st.warning("Charts directory not found.")
+                        # 3. Generate Chart
+                        chart_path = generate_chart(ticker_input, data)
+                        st.image(chart_path, caption=f"{ticker_input} Daily Chart")
+                        
+                        # 4. Analyze with Gemini
+                        analysis = analyze_chart(ticker_input, chart_path)
+                        
+                        if "error" in analysis:
+                            st.error(f"Analysis Failed: {analysis['error']}")
+                        else:
+                            # Display Results
+                            score = analysis.get('score', 0)
+                            verdict = analysis.get('verdict', 'N/A')
+                            reasoning = analysis.get('reasoning', 'No reasoning provided.')
+                            
+                            col_a, col_b = st.columns(2)
+                            col_a.metric("VCP Score", f"{score}/100")
+                            col_b.metric("Verdict", verdict)
+                            
+                            st.write(f"**Reasoning:** {reasoning}")
+                            
+                            if 'pivot_price' in analysis:
+                                st.write(f"**Pivot:** ${analysis['pivot_price']}")
+                            if 'stop_loss' in analysis:
+                                st.write(f"**Stop Loss:** ${analysis['stop_loss']}")
+                    else:
+                        st.error(f"Could not fetch data for {ticker_input}")
 
     # Watchlist & Export
     st.divider()
     st.subheader("📋 Watchlist & Export")
     
-    if not filtered_df.empty:
-        csv = filtered_df.to_csv(index=False).encode('utf-8')
-        st.download_button(
-            label="Download Filtered Candidates (CSV)",
-            data=csv,
-            file_name='vcp_candidates.csv',
-            mime='text/csv',
-        )
-        
-        # TradingView List
-        tv_list = ",".join(filtered_df['Ticker'].tolist())
-        st.text_area("Copy for TradingView (Comma Separated)", tv_list)
+    # Export CSV
+    csv = filtered_df.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        "Download Filtered Candidates (CSV)",
+        csv,
+        "vcp_candidates.csv",
+        "text/csv",
+        key='download-csv'
+    )
+    
+    # TradingView List
+    tv_list = ",".join(filtered_df['Ticker'].tolist())
+    st.text_area("Copy for TradingView Import:", tv_list, height=100)
 
     # Position Size Calculator
     st.divider()
-    st.subheader("🛑 Position Size Calculator")
+    st.subheader("🧮 Position Size Calculator")
     
-    with st.expander("Open Calculator"):
-        col_calc1, col_calc2, col_calc3 = st.columns(3)
-        account_size = col_calc1.number_input("Account Size ($)", value=10000, step=1000)
-        risk_pct = col_calc2.number_input("Risk per Trade (%)", value=1.0, step=0.1)
-        entry_price = col_calc3.number_input("Entry Price ($)", value=100.0, step=1.0)
+    col_calc1, col_calc2, col_calc3, col_calc4 = st.columns(4)
+    account_size = col_calc1.number_input("Account Size ($)", value=10000, step=1000)
+    risk_pct = col_calc2.number_input("Risk % per Trade", value=1.0, step=0.1)
+    entry_price = col_calc3.number_input("Entry Price ($)", value=100.0, step=1.0)
+    stop_loss = col_calc4.number_input("Stop Loss ($)", value=95.0, step=1.0)
+    
+    if entry_price > stop_loss:
+        risk_per_share = entry_price - stop_loss
+        risk_amount = account_size * (risk_pct / 100)
+        shares = int(risk_amount / risk_per_share)
+        position_value = shares * entry_price
         
-        stop_loss = st.number_input("Stop Loss Price ($)", value=95.0, step=1.0)
-        
-        if entry_price > stop_loss:
-            risk_amount = account_size * (risk_pct / 100)
-            risk_per_share = entry_price - stop_loss
-            shares = int(risk_amount / risk_per_share)
-            position_value = shares * entry_price
-            
-            st.markdown(f"""
-            ### Results:
-            *   **Shares to Buy:** `{shares}`
-            *   **Position Value:** `${position_value:,.2f}`
-            *   **Risk Amount:** `${risk_amount:,.2f}`
-            """)
-        else:
-            st.error("Stop Loss must be lower than Entry Price for Longs.")
+        st.success(f"**Buy {shares} shares**")
+        st.write(f"Position Value: ${position_value:,.2f}")
+        st.write(f"Risk Amount: ${risk_amount:.2f}")
+    else:
+        st.warning("Stop Loss must be below Entry Price for Longs.")
